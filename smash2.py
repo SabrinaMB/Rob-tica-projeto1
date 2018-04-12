@@ -180,16 +180,16 @@ def ImuOut(dado):
 
 class Aprender(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Ponteiro'])
+		smach.State.__init__(self, outcomes = ['Survive'])
 
 	def execute(self, userdata):
 		rospy.loginfo('Executing state APRENDENDO')
 		#comando para aprender a ler a cor
-		return 'Ponteiro'
+		return 'Survive'
 
 class Andando(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Andando','Analisando'])
+		smach.State.__init__(self, outcomes = ['Andando','Analisando','Bati'])
 
 	def execute(self, userdata):
 		global velocidade_saida
@@ -205,7 +205,10 @@ class Andando(smach.State):
 
 			return "Andando"
 		else:
-			return 'Analisando'
+			if flag_bati == 0:
+				return 'Analisando'
+			else:
+				return 'Bati'
 
 class Girando(smach.State):
 	def __init__(self):
@@ -231,9 +234,9 @@ class Girando(smach.State):
 
 class Analisando(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Andando','Girando',"Ponteiro"])
+		smach.State.__init__(self, outcomes = ['Andando','Girando','Survive'])
 		self.counter = 0
-		self.ObjGiro = "D"
+		self.ObjGiro = "E"
 
 	def execute(self, userdata):
 		global andar, girar, FollowCount
@@ -246,28 +249,29 @@ class Analisando(smach.State):
 				dif_y = media[1]-centro[1]
 				if math.fabs(dif_x)<30: # Estou Alinhado ao Objeto
 					andar += 3
-					self.ObjGiro = "E"
 					return 'Andando'
 
 				else: #Objeto Esquerda
 					if dif_x > 0:
-						girar -= 3
+						girar -= 1
 						self.ObjGiro = "D"
-						return 'Girando'
+						print("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD")
 
-					else: #Objeto direita
-						if self.ObjGiro == "D":
-							girar -= 3
-						else:
-							girar += 3
-						return 'Girando'
-
-			else:  # Procurando
-				girar += 5
+					elif dif_x < 0 and dif_x != -240: #Objeto direita
+						self.ObjGiro = "E"
+						print("EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE")
+						girar += 1
+					return 'Girando'
+			else:
+				if self.ObjGiro == "D":
+					girar += 5
+				elif self.ObjGiro == "E":
+					girar -= 5
 				return 'Girando'
+
 		else:
 			self.counter = 0
-			return "Ponteiro"
+			return "Survive"
 
 ################################################################################
 
@@ -277,6 +281,8 @@ class Bati(smach.State):
 
 	def execute(self, userdata):
 		rospy.loginfo('Executing state BATI')
+		if flag_bati == 1:
+			andar = -3
 		return "Survive"
 
 class Evitar(smach.State):
@@ -294,37 +300,21 @@ class Evitar(smach.State):
 
 class Survive(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes=['Bati', 'Evitar', 'Ponteiro'])
+		smach.State.__init__(self, outcomes=['Bati', 'Evitar', 'Analisando'])
 		self.counter = 0
 
 	def execute(self, userdata):
+		global flag_bati
 		rospy.loginfo('Executing state SURVIVE')
 		if self.counter < 1:
 			self.counter += 1
-			if 0: # Bati
+			if flag_bati != 0: # Bati
 				return "Bati"
 			else:  # Evitar
 				return 'Evitar'
 		else:
 			self.counter = 0
-			return "Ponteiro"
-
-################################################################################
-
-class Ponteiro(smach.State):
-	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Survive', 'Analisando'])
-		self.counter = 0
-
-	def execute(self, userdata):
-		rospy.loginfo('Executing state PONTEIRO')
-		if self.counter < 1:
-			self.counter += 1
-			return "Survive"
-		else:
-			self.counter = 0
-			return 'Analisando'
-
+			return "Analisando"
 
 
 
@@ -344,15 +334,12 @@ def maquina():
 
 		# Add states to the container
 		smach.StateMachine.add('APRENDENDO', Aprender(),
-								transitions = {'Ponteiro':'PONTEIRO'})
-		smach.StateMachine.add('PONTEIRO', Ponteiro(),
-								transitions = {'Analisando':'ANALISANDO',
-											   'Survive':'SURVIVE'})
+								transitions = {'Survive':'SURVIVE'})
 
 
 		smach.StateMachine.add('SURVIVE', Survive(),
-								transitions = {'Ponteiro':'PONTEIRO',
-												'Bati':'PONTEIRO',
+								transitions = {'Analisando':'ANALISANDO',
+												'Bati':'BATI',
 												'Evitar':"EVITAR"})
 		smach.StateMachine.add('EVITAR', Evitar(),
 								transitions = {'Survive':'SURVIVE'})
@@ -362,12 +349,13 @@ def maquina():
 
 
 		smach.StateMachine.add('ANALISANDO', Analisando(),
-								transitions = {'Ponteiro':"PONTEIRO",
+								transitions = {'Survive':'SURVIVE',
 											'Andando':'ANDANDO',
 											'Girando':'GIRANDO'})
 		smach.StateMachine.add('ANDANDO', Andando(),
 								transitions = {'Analisando':'ANALISANDO',
-											 'Andando':'ANDANDO'})
+												'Bati':'BATI',
+											 	'Andando':'ANDANDO'})
 		smach.StateMachine.add('GIRANDO', Girando(),
 								transitions = {'Analisando':'ANALISANDO',
 											 'Girando':'GIRANDO'})
