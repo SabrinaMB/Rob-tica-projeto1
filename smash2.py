@@ -23,6 +23,7 @@ bridge = CvBridge()
 cv_image = None
 media = []
 centro = []
+maior_contorno = []
 atraso = 1.5
 andar = 0
 girar = 0
@@ -49,6 +50,7 @@ flag_bati = 0
 ################################################################################
 
 def identifica_cor(frame):
+	global media, centro, maior_contorno
 	frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
 	cor_menor = np.array([50, 50, 50])
@@ -172,7 +174,7 @@ def ImuOut(dado):
 	mimuX.append(IimuX)
 	if len(mimuX)>10:mimuX = mimuX[5:]
 	imuX = np.mean(mimuX)
-	if imuX <= -1.3:
+	if IimuX <= 0.7:  # VAL DETECTA BATI
 		mimuX = []
 		flag_bati = 1
 
@@ -193,10 +195,11 @@ class Andando(smach.State):
 
 	def execute(self, userdata):
 		global velocidade_saida
-		global andar, velLimit
+		global andar, velLimit, ObjDis
 		rospy.loginfo('Executing state ANDANDO')
 		#comando para andar
-		X = velLimit * 2
+		X = velLimit * ObjDis
+		X = X * (andar/abs(andar))
 		vel = Twist(Vector3(X, 0, 0), Vector3(0, 0, 0))
 		velocidade_saida.publish(vel)
 		if andar != 0:
@@ -212,15 +215,15 @@ class Andando(smach.State):
 
 class Girando(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Girando','Analisando'])
+		smach.State.__init__(self, outcomes = ['Girando','Analisando','Bati'])
 
 	def execute(self, userdata):
 		global velocidade_saida
 		global girar
 		rospy.loginfo('Executing state GIRANDO')
 		#comando para girar
-		if girar < 3:
-			vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, 0.2))
+		if abs(girar) < 3:
+			vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, 0.3))
 			velocidade_saida.publish(vel)
 		else:
 			vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, girar * 0.5))
@@ -230,7 +233,10 @@ class Girando(smach.State):
 			else: girar -= 1
 			return "Girando"
 		else:
-			return 'Analisando'
+			if flag_bati == 0:
+				return 'Analisando'
+			else:
+				return 'Bati'
 
 class Analisando(smach.State):
 	def __init__(self):
@@ -239,8 +245,8 @@ class Analisando(smach.State):
 		self.ObjGiro = "E"
 
 	def execute(self, userdata):
-		global andar, girar, FollowCount
-		global media, centro
+		global andar, girar, FollowCount, ObjDis
+		global media, centro, maior_contorno
 		rospy.loginfo('Executing state ANALISANDO')
 		if self.counter < 3:
 			self.counter += 1
@@ -249,6 +255,7 @@ class Analisando(smach.State):
 				dif_y = media[1]-centro[1]
 				if math.fabs(dif_x)<30: # Estou Alinhado ao Objeto
 					andar += 3
+					ObjDis = 100 - len(maior_contorno)  # Parametro Proporcional
 					return 'Andando'
 
 				else: #Objeto Esquerda
@@ -277,12 +284,16 @@ class Analisando(smach.State):
 
 class Bati(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes=['Survive','Bati'])
+		smach.State.__init__(self, outcomes=['Survive','Bati','Andando','Girando'])
+		self.IDO = 0
 
 	def execute(self, userdata):
-		rospy.loginfo('Executing state BATI')
+		global flag_bati
+		rospy.loginfo('Executing state BATIIIIIIIIIIIIIIIIIIIIIIIIIIIIII')
 		if flag_bati == 1:
 			andar = -3
+			flag_bati = 0
+			return "Andando"
 		return "Survive"
 
 class Evitar(smach.State):
@@ -345,7 +356,9 @@ def maquina():
 								transitions = {'Survive':'SURVIVE'})
 		smach.StateMachine.add('BATI', Bati(),
 								transitions = {'Survive':'SURVIVE',
-												'Bati': 'BATI'})
+												'Bati': 'BATI',
+												'Andando': "ANDANDO",
+												'Girando': "GIRANDO"})
 
 
 		smach.StateMachine.add('ANALISANDO', Analisando(),
@@ -358,7 +371,8 @@ def maquina():
 											 	'Andando':'ANDANDO'})
 		smach.StateMachine.add('GIRANDO', Girando(),
 								transitions = {'Analisando':'ANALISANDO',
-											 'Girando':'GIRANDO'})
+											 'Girando':'GIRANDO',
+											 'Bati':"BATI"})
 
 
 
