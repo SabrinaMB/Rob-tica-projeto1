@@ -15,15 +15,18 @@ from sensor_msgs.msg import Image, CompressedImage, LaserScan, Imu
 from std_msgs.msg import Header
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
+from matplotlib import pyplot as plt
 
 ################################################################################
 
 bridge = CvBridge()
 
+MIN_MATCH_COUNT_FEATURES = 81.5
+POWERPUFF_flag = 0
+
 cv_image = None
 media = []
 centro = []
-maior_contorno = []
 atraso = 1.5
 andar = 0
 girar = 0
@@ -47,10 +50,60 @@ check_delay = False
 mimuX = []
 flag_bati = 0
 
+lower = 0
+upper = 1
+
+################################################################################
+def auto_canny(image, sigma=0.33):
+	global lower,upper
+    # compute the median of the single channel pixel intensities
+    v = np.median(image)
+
+    # apply automatic Canny edge detection using the computed median
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    edged = cv2.Canny(image, lower, upper)
+
+    # return the edged image
+    return edged
+
+def find_features(cv_image):
+	global flann, des1
+	global MIN_MATCH_COUNT_FEATURES, POWERPUFF_flag
+    # Capture frame-by-frame
+    ret, frame = cv_image.read()
+
+    # Convert the frame to grayscaleg
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # A gaussian blur to get rid of the noise in the image
+    blur = cv2.GaussianBlur(gray,(5,5),0)
+    #blur = gray
+    # Detect the edges present in the image
+    bordas = auto_canny(blur)
+
+    img2 = frame # Imagem do cenario
+
+    # find the keypoints and descriptors with SIFT in each image
+    kp2, des2 = sift.detectAndCompute(img2,None)
+
+    # Tenta fazer a melhor comparacao usando o algoritmo
+    matches = flann.knnMatch(des1, des2, k=2)
+
+    good = []
+    for m,n in matches:
+        if m.distance < 0.8*n.distance:
+            good.append(m)
+
+
+    if len(good) > MIN_MATCH_COUNT_FEATURES: # achei
+        POWERPUFF_flag = 1
+
+    else:  # Nao achei
+        POWERPUFF_flag = 0
+
 ################################################################################
 
 def identifica_cor(frame):
-	global media, centro, maior_contorno
 	frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
 	cor_menor = np.array([50, 50, 50])
@@ -107,6 +160,7 @@ def roda_todo_frame_cor(imagem):
 		cv_image = bridge.compressed_imgmsg_to_cv2(imagem, "bgr8")
 		media, centro = identifica_cor(cv_image)
 		depois = time.clock()
+		find_features(cv_image)
 		cv2.imshow("Camera", cv_image)
 	except CvBridgeError as e:
 		print('ex', e)
@@ -174,7 +228,7 @@ def ImuOut(dado):
 	mimuX.append(IimuX)
 	if len(mimuX)>10:mimuX = mimuX[5:]
 	imuX = np.mean(mimuX)
-	if IimuX <= 0.7:  # VAL DETECTA BATI
+	if imuX <= -1.3: # no outro codigo ta igual a 0
 		mimuX = []
 		flag_bati = 1
 
@@ -195,17 +249,17 @@ class Andando(smach.State):
 
 	def execute(self, userdata):
 		global velocidade_saida
-		global andar, velLimit, ObjDis
+		global andar, velLimit
 		rospy.loginfo('Executing state ANDANDO')
 		#comando para andar
-		X = velLimit * ObjDis
-		X = X * (andar/abs(andar))
+		X = velLimit * 2
 		vel = Twist(Vector3(X, 0, 0), Vector3(0, 0, 0))
 		velocidade_saida.publish(vel)
 		if andar != 0:
-			if andar < 0: andar+=1
-			else: andar-=1
-
+			if andar < 0:
+				andar+=1
+			else:
+				andar-=1
 			return "Andando"
 		else:
 			if flag_bati == 0:
@@ -215,28 +269,16 @@ class Andando(smach.State):
 
 class Girando(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Girando','Analisando','Bati'])
+		smach.State.__init__(self, outcomes = ['Girando','Analisando'])
 
 	def execute(self, userdata):
 		global velocidade_saida
 		global girar
 		rospy.loginfo('Executing state GIRANDO')
 		#comando para girar
-		if abs(girar) < 3:
-			vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, 0.3))
-			velocidade_saida.publish(vel)
-		else:
-			vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, girar * 0.5))
-			velocidade_saida.publish(vel)
-		if girar != 0:
-			if girar < 0: girar += 1
-			else: girar -= 1
-			return "Girando"
-		else:
-			if flag_bati == 0:
-				return 'Analisando'
-			else:
-				return 'Bati'
+		vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, girar))
+		velocidade_saida.publish(vel)
+		return 'Analisando'
 
 class Analisando(smach.State):
 	def __init__(self):
@@ -245,35 +287,40 @@ class Analisando(smach.State):
 		self.ObjGiro = "E"
 
 	def execute(self, userdata):
-		global andar, girar, FollowCount, ObjDis
-		global media, centro, maior_contorno
+		global andar, girar, FollowCount
+		global media, centro
 		rospy.loginfo('Executing state ANALISANDO')
 		if self.counter < 3:
 			self.counter += 1
-			if len(media) != 0 and len(centro) != 0: # achei objeto
+			if POWERPUFF_flag:
+				girar = 10
+				pass  #ALTERAAAAAR
+			elif len(media) != 0 and len(centro) != 0: # lista nao ta vazia
+
 				dif_x = media[0]-centro[0]
 				dif_y = media[1]-centro[1]
-				if math.fabs(dif_x)<30: # Estou Alinhado ao Objeto
+				if math.fabs(dif_x) < 60: # Estou Alinhado ao Objeto
 					andar += 3
-					ObjDis = 100 - len(maior_contorno)  # Parametro Proporcional
 					return 'Andando'
 
 				else: #Objeto Esquerda
 					if dif_x > 0:
-						girar -= 1
+						girar = -0.6
 						self.ObjGiro = "D"
 						print("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD")
 
 					elif dif_x < 0 and dif_x != -240: #Objeto direita
 						self.ObjGiro = "E"
 						print("EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE")
-						girar += 1
+						girar = 0.6
+					else:
+						girar = 0.2
 					return 'Girando'
 			else:
 				if self.ObjGiro == "D":
-					girar += 5
+					girar = -0.2
 				elif self.ObjGiro == "E":
-					girar -= 5
+					girar = 0.2
 				return 'Girando'
 
 		else:
@@ -281,6 +328,7 @@ class Analisando(smach.State):
 			return "Survive"
 
 ################################################################################
+
 
 class Bati(smach.State):
 	def __init__(self):
@@ -327,8 +375,6 @@ class Survive(smach.State):
 			self.counter = 0
 			return "Analisando"
 
-
-
 def maquina():
 	global velocidade_saida
 	rospy.init_node('smach_example_state_machine')
@@ -336,6 +382,18 @@ def maquina():
 	recebe_scan = rospy.Subscriber("/scan", LaserScan, scaneou)
 	recebe_imu = rospy.Subscriber("/imu", Imu, ImuOut)
 	velocidade_saida = rospy.Publisher("/cmd_vel", Twist, queue_size = 1)
+
+	# Initiate SIFT detector
+	sift = cv2.xfeatures2d.SIFT_create()
+	img1 = cv2.imread('powerpuff-girls.png',0)          # Imagem a procurar
+	kp1, des1 = sift.detectAndCompute(img1,None)
+
+	FLANN_INDEX_KDTREE = 0
+	index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+	search_params = dict(checks = 5)
+
+	# Configura o algoritmo de casamento de features
+	flann = cv2.FlannBasedMatcher(index_params, search_params)
 
 	# Create a SMACH state machine
 	sm = smach.StateMachine(outcomes=['terminei'])
@@ -360,7 +418,6 @@ def maquina():
 												'Andando': "ANDANDO",
 												'Girando': "GIRANDO"})
 
-
 		smach.StateMachine.add('ANALISANDO', Analisando(),
 								transitions = {'Survive':'SURVIVE',
 											'Andando':'ANDANDO',
@@ -371,8 +428,7 @@ def maquina():
 											 	'Andando':'ANDANDO'})
 		smach.StateMachine.add('GIRANDO', Girando(),
 								transitions = {'Analisando':'ANALISANDO',
-											 'Girando':'GIRANDO',
-											 'Bati':"BATI"})
+											 'Girando':'GIRANDO'})
 
 
 
