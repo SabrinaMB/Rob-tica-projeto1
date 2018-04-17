@@ -24,7 +24,7 @@ bridge = CvBridge()
 # Initiate SIFT detector
 sift = cv2.xfeatures2d.SIFT_create()
 img1 = cv2.imread('powerpuff-girls.png',0)	  # Imagem a procurar
-img1 = cv2.resize(img1,(0,0),fx = 0.2, fy = 0.2)
+img1 = cv2.resize(img1,(0,0),fx = 0.18, fy = 0.18)
 kp1, des1 = sift.detectAndCompute(img1,None)
 
 FLANN_INDEX_KDTREE = 0
@@ -35,11 +35,12 @@ search_params = dict(checks = 5)
 flann = cv2.FlannBasedMatcher(index_params, search_params)
 
 
-MIN_MATCH_COUNT_FEATURES = 6
+MIN_MATCH_COUNT_FEATURES = 15
 
 POWERPUFF_flag = 0
 
 cv_image = None
+frame_hsv = None
 media = []
 centro = []
 atraso = 1.5
@@ -60,10 +61,16 @@ MListFrente = []
 MListDireita = []
 MListEsquerda = []
 
+cor_maior = np.array([70, 255, 255])
+cor_menor = np.array([50, 50, 50])
+
 check_delay = False
 
 mimuX = []
+imuX = 0
+
 flag_bati = 0
+flag_reconfig = 0
 
 lower = 0
 upper = 1
@@ -98,7 +105,7 @@ def find_features(cv_image):
 	img2 = frame # Imagem do cenario
 
 	# find the keypoints and descriptors with SIFT in each image
-	img2 = cv2.resize(img2,(0,0),fx = 0.2, fy = 0.2)
+	img2 = cv2.resize(img2,(0,0),fx = 0.18, fy = 0.18)
 	kp2, des2 = sift.detectAndCompute(img2,None)
 
 	# Tenta fazer a melhor comparacao usando o algoritmo
@@ -118,10 +125,9 @@ def find_features(cv_image):
 ################################################################################
 
 def identifica_cor(frame):
+	global cor_maior, cor_menor, frame_hsv
 	frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-	cor_menor = np.array([50, 50, 50])
-	cor_maior = np.array([70, 255, 255])
 	segmentado_cor = cv2.inRange(frame_hsv, cor_menor, cor_maior)
 
 
@@ -153,7 +159,6 @@ def identifica_cor(frame):
 	cv2.waitKey(1)
 
 	centro = (frame.shape[0]//2, frame.shape[1]//2)
-
 	return media, centro
 
 def roda_todo_frame_cor(imagem):
@@ -237,14 +242,16 @@ def scaneou(dado):
 		MListTras = MListTras[50:]
 
 def ImuOut(dado):
-	global imuX, mimuX, flag_bati
-	IimuX = np.array(dado.linear_acceleration.x).round(decimals=4)
+	global imuX, mimuX, flag_bati, flag_reconfig
+	IimuX = np.array(dado.linear_acceleration.x).round(decimals=2)
 	mimuX.append(IimuX)
-	if len(mimuX)>10:mimuX = mimuX[5:]
+	if len(mimuX)>10: mimuX = mimuX[5:]
 	imuX = np.mean(mimuX)
-	if imuX <= -1.3: # no outro codigo ta igual a 0
+	if imuX <= -3 and imuX > -8: # no outro codigo ta igual a 0
 		mimuX = []
 		flag_bati = 1
+	elif imuX < -8:
+		flag_reconfig = 1
 
 ################################################################################
 
@@ -253,8 +260,20 @@ class Aprender(smach.State):
 		smach.State.__init__(self, outcomes = ['Survive'])
 
 	def execute(self, userdata):
+		global velocidade_saida, flag_bati, flag_reconfig
+		global frame_hsv
+		global cor_maior,cor_menor
 		rospy.loginfo('Executing state APRENDENDO')
 		#comando para aprender a ler a cor
+		vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, 0))
+		velocidade_saida.publish(vel)
+		time.sleep(5)
+		valor_medio_cor_central = np.mean(np.array(frame_hsv)[280:360,200:280,0])
+		range_limit = 10
+		cor_maior = np.array([valor_medio_cor_central + range_limit, 255, 255])
+		cor_menor = np.array([valor_medio_cor_central - range_limit, 50, 50])
+		flag_bati = 0
+		flag_reconfig = 0
 		return 'Survive'
 
 class Andando(smach.State):
@@ -263,11 +282,15 @@ class Andando(smach.State):
 
 	def execute(self, userdata):
 		global velocidade_saida
-		global andar, velLimit
+		global andar, velLimit, flag_bati
 		rospy.loginfo('Executing state ANDANDO')
 		#comando para andar
+
 		X = velLimit * 2
-		vel = Twist(Vector3(X, 0, 0), Vector3(0, 0, 0))
+		if andar > 0:
+			vel = Twist(Vector3(X, 0, 0), Vector3(0, 0, 0))
+		else:
+			vel = Twist(Vector3(-X, 0, 0), Vector3(0, 0, 0))
 		velocidade_saida.publish(vel)
 		if andar != 0:
 			if andar < 0:
@@ -290,9 +313,17 @@ class Girando(smach.State):
 		global girar
 		rospy.loginfo('Executing state GIRANDO')
 		#comando para girar
-		vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, girar))
+		X = girar * 0.5
+		vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, X))
 		velocidade_saida.publish(vel)
-		return 'Analisando'
+		if girar != 0:
+			if girar < 0:
+				girar += 1
+			else:
+				girar -= 1
+			return "Girando"
+		else:
+			return 'Analisando'
 
 class Analisando(smach.State):
 	def __init__(self):
@@ -307,7 +338,7 @@ class Analisando(smach.State):
 		if self.counter < 3:
 			self.counter += 1
 			if POWERPUFF_flag:
-				girar = 10
+				girar = 1000
 				print("powerpuff girls!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 				return 'Girando'
 			elif len(media) != 0 and len(centro) != 0: # lista nao ta vazia
@@ -315,27 +346,27 @@ class Analisando(smach.State):
 				dif_x = media[0]-centro[0]
 				dif_y = media[1]-centro[1]
 				if math.fabs(dif_x) < 60: # Estou Alinhado ao Objeto
-					andar += 3
+					andar += 10
 					return 'Andando'
 
 				else: #Objeto Esquerda
 					if dif_x > 0:
-						girar = -0.6
+						girar = -1
 						self.ObjGiro = "D"
 						print("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD")
 
 					elif dif_x < 0 and dif_x != -240: #Objeto direita
 						self.ObjGiro = "E"
 						print("EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE")
-						girar = 0.6
+						girar = 1
 					else:
-						girar = 0.2
+						girar = 2
 					return 'Girando'
 			else:
 				if self.ObjGiro == "D":
-					girar = -0.2
+					girar = -2
 				elif self.ObjGiro == "E":
-					girar = 0.2
+					girar = 2
 				return 'Girando'
 
 		else:
@@ -351,12 +382,13 @@ class Bati(smach.State):
 		self.IDO = 0
 
 	def execute(self, userdata):
-		global flag_bati
+		global flag_bati, andar
 		rospy.loginfo('Executing state BATIIIIIIIIIIIIIIIIIIIIIIIIIIIIII')
 		if flag_bati == 1:
-			andar = -3
+			andar -= 200
 			flag_bati = 0
 			return "Andando"
+
 		return "Survive"
 
 class Evitar(smach.State):
@@ -374,7 +406,7 @@ class Evitar(smach.State):
 
 class Survive(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes=['Bati', 'Evitar', 'Analisando'])
+		smach.State.__init__(self, outcomes=['Bati', 'Evitar', 'Analisando', 'Aprender'])
 		self.counter = 0
 
 	def execute(self, userdata):
@@ -382,10 +414,13 @@ class Survive(smach.State):
 		rospy.loginfo('Executing state SURVIVE')
 		if self.counter < 1:
 			self.counter += 1
-			if flag_bati != 0: # Bati
-				return "Bati"
-			else:  # Evitar
-				return 'Evitar'
+			if flag_reconfig:
+				return 'Aprender'
+			else:
+				if flag_bati != 0: # Bati
+					return "Bati"
+				else:  # Evitar
+					return 'Evitar'
 		else:
 			self.counter = 0
 			return "Analisando"
@@ -409,14 +444,16 @@ def maquina():
 	with sm:
 
 		# Add states to the container
-		smach.StateMachine.add('APRENDENDO', Aprender(),
-								transitions = {'Survive':'SURVIVE'})
-
 
 		smach.StateMachine.add('SURVIVE', Survive(),
 								transitions = {'Analisando':'ANALISANDO',
 												'Bati':'BATI',
-												'Evitar':"EVITAR"})
+												'Evitar':"EVITAR",
+												'Aprender':'APRENDENDO'})
+
+		smach.StateMachine.add('APRENDENDO', Aprender(),
+								transitions = {'Survive':'SURVIVE'})
+
 		smach.StateMachine.add('EVITAR', Evitar(),
 								transitions = {'Survive':'SURVIVE'})
 		smach.StateMachine.add('BATI', Bati(),
