@@ -21,7 +21,22 @@ from matplotlib import pyplot as plt
 
 bridge = CvBridge()
 
-MIN_MATCH_COUNT_FEATURES = 81.5
+# Initiate SIFT detector
+sift = cv2.xfeatures2d.SIFT_create()
+img1 = cv2.imread('powerpuff-girls.png',0)	  # Imagem a procurar
+img1 = cv2.resize(img1,(0,0),fx = 0.2, fy = 0.2)
+kp1, des1 = sift.detectAndCompute(img1,None)
+
+FLANN_INDEX_KDTREE = 0
+index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+search_params = dict(checks = 5)
+
+# Configura o algoritmo de casamento de features
+flann = cv2.FlannBasedMatcher(index_params, search_params)
+
+
+MIN_MATCH_COUNT_FEATURES = 6
+
 POWERPUFF_flag = 0
 
 cv_image = None
@@ -56,50 +71,49 @@ upper = 1
 ################################################################################
 def auto_canny(image, sigma=0.33):
 	global lower,upper
-    # compute the median of the single channel pixel intensities
-    v = np.median(image)
+	# compute the median of the single channel pixel intensities
+	v = np.median(image)
 
-    # apply automatic Canny edge detection using the computed median
-    lower = int(max(0, (1.0 - sigma) * v))
-    upper = int(min(255, (1.0 + sigma) * v))
-    edged = cv2.Canny(image, lower, upper)
+	# apply automatic Canny edge detection using the computed median
+	lower = int(max(0, (1.0 - sigma) * v))
+	upper = int(min(255, (1.0 + sigma) * v))
+	edged = cv2.Canny(image, lower, upper)
 
-    # return the edged image
-    return edged
+	# return the edged image
+	return edged
 
 def find_features(cv_image):
-	global flann, des1
+	global flann, des1, sift
 	global MIN_MATCH_COUNT_FEATURES, POWERPUFF_flag
-    # Capture frame-by-frame
-    ret, frame = cv_image.read()
+	# Capture frame-by-frame
+	frame = cv_image
 
-    # Convert the frame to grayscaleg
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    # A gaussian blur to get rid of the noise in the image
-    blur = cv2.GaussianBlur(gray,(5,5),0)
-    #blur = gray
-    # Detect the edges present in the image
-    bordas = auto_canny(blur)
+	# Convert the frame to grayscaleg
+	gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+	# A gaussian blur to get rid of the noise in the image
+	blur = cv2.GaussianBlur(gray,(5,5),0)
+	# Detect the edges present in the image
+	bordas = auto_canny(blur)
 
-    img2 = frame # Imagem do cenario
+	img2 = frame # Imagem do cenario
 
-    # find the keypoints and descriptors with SIFT in each image
-    kp2, des2 = sift.detectAndCompute(img2,None)
+	# find the keypoints and descriptors with SIFT in each image
+	img2 = cv2.resize(img2,(0,0),fx = 0.2, fy = 0.2)
+	kp2, des2 = sift.detectAndCompute(img2,None)
 
-    # Tenta fazer a melhor comparacao usando o algoritmo
-    matches = flann.knnMatch(des1, des2, k=2)
+	# Tenta fazer a melhor comparacao usando o algoritmo
+	matches = flann.knnMatch(des1, des2, k=2)
 
-    good = []
-    for m,n in matches:
-        if m.distance < 0.8*n.distance:
-            good.append(m)
+	good = []
+	for m,n in matches:
+		if m.distance < 0.8 * n.distance:
+			good.append(m)
 
+	if len(good) > MIN_MATCH_COUNT_FEATURES: # achei
+		POWERPUFF_flag = 1
 
-    if len(good) > MIN_MATCH_COUNT_FEATURES: # achei
-        POWERPUFF_flag = 1
-
-    else:  # Nao achei
-        POWERPUFF_flag = 0
+	else:  # Nao achei
+		POWERPUFF_flag = 0
 
 ################################################################################
 
@@ -294,7 +308,8 @@ class Analisando(smach.State):
 			self.counter += 1
 			if POWERPUFF_flag:
 				girar = 10
-				pass  #ALTERAAAAAR
+				print("powerpuff girls!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+				return 'Girando'
 			elif len(media) != 0 and len(centro) != 0: # lista nao ta vazia
 
 				dif_x = media[0]-centro[0]
@@ -377,23 +392,15 @@ class Survive(smach.State):
 
 def maquina():
 	global velocidade_saida
+
+
+
 	rospy.init_node('smach_example_state_machine')
 	recebedor_cor = rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, roda_todo_frame_cor, queue_size = 10, buff_size = 2**24)
 	recebe_scan = rospy.Subscriber("/scan", LaserScan, scaneou)
 	recebe_imu = rospy.Subscriber("/imu", Imu, ImuOut)
 	velocidade_saida = rospy.Publisher("/cmd_vel", Twist, queue_size = 1)
 
-	# Initiate SIFT detector
-	sift = cv2.xfeatures2d.SIFT_create()
-	img1 = cv2.imread('powerpuff-girls.png',0)          # Imagem a procurar
-	kp1, des1 = sift.detectAndCompute(img1,None)
-
-	FLANN_INDEX_KDTREE = 0
-	index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
-	search_params = dict(checks = 5)
-
-	# Configura o algoritmo de casamento de features
-	flann = cv2.FlannBasedMatcher(index_params, search_params)
 
 	# Create a SMACH state machine
 	sm = smach.StateMachine(outcomes=['terminei'])
