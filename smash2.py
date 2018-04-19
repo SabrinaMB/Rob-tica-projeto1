@@ -68,9 +68,12 @@ check_delay = False
 
 mimuX = []
 imuX = 0
+listaIMUXf = []
+listaIMUXg = []
 
 flag_bati = 0
 flag_reconfig = 0
+toHome_flag = 0
 
 lower = 0
 upper = 1
@@ -91,7 +94,7 @@ def auto_canny(image, sigma=0.33):
 
 def find_features(cv_image):
 	global flann, des1, sift
-	global MIN_MATCH_COUNT_FEATURES, POWERPUFF_flag
+	global MIN_MATCH_COUNT_FEATURES, POWERPUFF_flag, toHome_flag
 	# Capture frame-by-frame
 	frame = cv_image
 
@@ -242,9 +245,12 @@ def scaneou(dado):
 		MListTras = MListTras[50:]
 
 def ImuOut(dado):
-	global imuX, mimuX, flag_bati, flag_reconfig
+	global imuX, mimuX, listaIMUXf, lisraIMUg, flag_bati, flag_reconfig
 	IimuX = np.array(dado.linear_acceleration.x).round(decimals=2)
+	IimuXg = np.array(dado.angular_velocity.z).round(decimals=2)*49 #49
 	mimuX.append(IimuX)
+	listaIMUXf.append(IimuX)
+	listaIMUXg.append(IimuXg)
 	if len(mimuX)>10: mimuX = mimuX[5:]
 	imuX = np.mean(mimuX)
 	if imuX <= -3 and imuX > -8: # no outro codigo ta igual a 0
@@ -278,11 +284,11 @@ class Aprender(smach.State):
 
 class Andando(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Andando','Analisando','Bati'])
+		smach.State.__init__(self, outcomes = ['Andando','Analisando','Bati','Casa'])
 
 	def execute(self, userdata):
 		global velocidade_saida
-		global andar, velLimit, flag_bati
+		global andar, velLimit, flag_bati, toHome_flag
 		rospy.loginfo('Executing state ANDANDO')
 		#comando para andar
 
@@ -299,21 +305,24 @@ class Andando(smach.State):
 				andar-=1
 			return "Andando"
 		else:
-			if flag_bati == 0:
+			if toHome_flag == 1:
+				return 'Casa'
+			elif flag_bati == 0:
 				return 'Analisando'
 			else:
 				return 'Bati'
 
 class Girando(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Girando','Analisando'])
+		smach.State.__init__(self, outcomes = ['Girando','Analisando','Casa'])
 
 	def execute(self, userdata):
 		global velocidade_saida
 		global girar
+		global toHome_flag
 		rospy.loginfo('Executing state GIRANDO')
 		#comando para girar
-		X = girar * 0.5
+		X = girar * 0.6
 		vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, X))
 		velocidade_saida.publish(vel)
 		if girar != 0:
@@ -323,23 +332,29 @@ class Girando(smach.State):
 				girar -= 1
 			return "Girando"
 		else:
-			return 'Analisando'
+			if toHome_flag == 1:
+				return 'Casa'
+			else:
+				return 'Analisando'
 
 class Analisando(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes = ['Andando','Girando','Survive'])
+		smach.State.__init__(self, outcomes = ['Andando','Girando','Survive','Casa'])
 		self.counter = 0
 		self.ObjGiro = "E"
 
 	def execute(self, userdata):
 		global andar, girar, FollowCount
-		global media, centro
+		global media, centro, toHome_flag
 		rospy.loginfo('Executing state ANALISANDO')
 		if self.counter < 3:
 			self.counter += 1
-			if POWERPUFF_flag:
+			if toHome_flag:
+				return 'Casa'
+			elif POWERPUFF_flag:
 				girar = 1000
 				print("powerpuff girls!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+				toHome_flag = 1
 				return 'Girando'
 			elif len(media) != 0 and len(centro) != 0: # lista nao ta vazia
 
@@ -373,6 +388,58 @@ class Analisando(smach.State):
 			self.counter = 0
 			return "Survive"
 
+class Casa(smach.State):
+	def __init__(self):
+		smach.State.__init__(self, outcomes = ['Andando','Girando','Survive','Casa'])
+		self.counter = 0
+		self.Virgem = 1  #Primeira vez nao aconteceu
+		self.ptoMapa = 0
+
+	def execute(self, userdata):
+		global vel
+		global andar, girar
+		global listaIMUXf, listaIMUXg
+		rospy.loginfo('Executing state PARA CASA')
+		if self.Virgem:
+			self.Mapaf = listaIMUXf[10:]
+			self.Mapag = listaIMUXg[10:]
+			self.Virgem = 0
+			print(self.Mapaf)
+			print(self.Mapag)
+			return 'Casa'
+		else:
+			if self.ptoMapa < len(self.Mapaf):
+				Gop = math.fabs(self.Mapag[-self.ptoMapa])
+				Fop = math.fabs(self.Mapaf[-self.ptoMapa])*2
+				if Fop > 2.2 or Gop > 1:
+					if Fop < Gop:
+						if self.Mapag[-self.ptoMapa] > 0:
+							if Gop < 5:
+								girar = -3
+							else:
+								girar = -9
+						else:
+							if Gop < 5:
+								girar = 3
+							else:
+								girar = 9
+						self.ptoMapa += 1
+						print(str(self.ptoMapa)+"/"+str(len(self.Mapag)))
+						return 'Girando'
+					else:
+						if self.Mapaf[-self.ptoMapa] > 0:
+							andar = 10
+						else:
+							andar = -10
+						self.ptoMapa += 1
+						print(str(self.ptoMapa)+"/"+str(len(self.Mapag)))
+						return 'Andando'
+				else:
+					vel = Twist(Vector3(0, 0, 0), Vector3(0, 0, 0))
+					velocidade_saida.publish(vel)
+		self.ptoMapa += 1
+		print(str(self.ptoMapa)+"/"+str(len(self.Mapag)))
+		return 'Casa'
 ################################################################################
 
 
@@ -406,11 +473,11 @@ class Evitar(smach.State):
 
 class Survive(smach.State):
 	def __init__(self):
-		smach.State.__init__(self, outcomes=['Bati', 'Evitar', 'Analisando', 'Aprender'])
+		smach.State.__init__(self, outcomes=['Bati', 'Evitar', 'Analisando', 'Aprender','Casa'])
 		self.counter = 0
 
 	def execute(self, userdata):
-		global flag_bati
+		global flag_bati, toHome_flag
 		rospy.loginfo('Executing state SURVIVE')
 		if self.counter < 1:
 			self.counter += 1
@@ -423,7 +490,10 @@ class Survive(smach.State):
 					return 'Evitar'
 		else:
 			self.counter = 0
-			return "Analisando"
+			if toHome_flag:
+				return "Casa"
+			else:
+				return "Analisando"
 
 def maquina():
 	global velocidade_saida
@@ -449,7 +519,8 @@ def maquina():
 								transitions = {'Analisando':'ANALISANDO',
 												'Bati':'BATI',
 												'Evitar':"EVITAR",
-												'Aprender':'APRENDENDO'})
+												'Aprender':'APRENDENDO',
+												'Casa':'CASA'})
 
 		smach.StateMachine.add('APRENDENDO', Aprender(),
 								transitions = {'Survive':'SURVIVE'})
@@ -465,14 +536,22 @@ def maquina():
 		smach.StateMachine.add('ANALISANDO', Analisando(),
 								transitions = {'Survive':'SURVIVE',
 											'Andando':'ANDANDO',
-											'Girando':'GIRANDO'})
+											'Girando':'GIRANDO',
+											'Casa':'CASA'})
+		smach.StateMachine.add('CASA', Casa(),
+								transitions = {'Survive':'SURVIVE',
+											'Andando':'ANDANDO',
+											'Girando':'GIRANDO',
+											'Casa':'CASA'})
 		smach.StateMachine.add('ANDANDO', Andando(),
 								transitions = {'Analisando':'ANALISANDO',
 												'Bati':'BATI',
-											 	'Andando':'ANDANDO'})
+											 	'Andando':'ANDANDO',
+												'Casa':'CASA'})
 		smach.StateMachine.add('GIRANDO', Girando(),
 								transitions = {'Analisando':'ANALISANDO',
-											 'Girando':'GIRANDO'})
+											 'Girando':'GIRANDO',
+ 											 'Casa':'CASA'})
 
 
 
